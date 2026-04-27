@@ -2,29 +2,34 @@
 
 #### Overall specifications & constraints
 
-The main purpose of this document is to define the specification and constraints for the data generation phase of a ***Machine Learning Device Positioning Prediction Model.***
+The main purpose of this document is to define the specification and constraints for the RSSI data generation phase of a ***Machine Learning Device Positioning Prediction Model.***
 
-We are emulating ***2D indoor and outdoor environments*** with multiple devices operating within a ***5 GHz frequency band***. To avoid bias, we ensure that both scenarios have an equal probability of being generated during data generation.
+We are emulating ***2D indoor and outdoor environments*** with multiple devices operating within a ***5 GHz frequency band***.
 
 **Simplified data generation process:**
-1. Define the environment type (*indoor or outdoor*) using a random selection process.
-2. Generate network characteristics based on the environment type.
+1. Define the scenario environment type (*indoor or outdoor*) using a random selection process. 
+    - *This directly affects antenna-coverage generation. RSSI propagation class is derived from target location and per-link blockers, as described below.*
+2. Generate necessary network characteristics to perform RSSI calculations based on the derived per-link RSSI environment class.
 3. Return the generated data in a structured format for positioning estimation calculations.
 
 <br>
 
-### Grid
+### Environment
 
 - **Dimensionality:**  
   The environment is modelled as a two-dimensional Cartesian coordinate space, with positions represented as $(x, y)$ coordinate pairs.
 
-- **Restricted domain and range $(x, y)$:**  
-  $-30 < x < 30,\ -30 < y < 30$  
-  representing an indoor or outdoor environment (**60 m × 60 m = 3600 m²**), such as a shopping mall, field, or warehouse.
+  <br>
 
-- **Limited device generation:**  
-  The number of devices/endpoints in the network is constrained to a manageable range (e.g. **15–30**) to ensure the dataset remains tractable for training while still providing sufficient geometric coverage for accurate positioning.
-  The number of antennas will be 5-10.
+- **Restricted domain and range $(x, y)$:**  
+  $-100 > x > 100,\ -100 > y > 100$  
+  $-400 < x < 400,\ -400 < y < 400$  
+  representing an indoor or outdoor environment of minimum **200 m × 200 m = 40,000 m²** and maximum **800 m × 800 m = 640,000 m²**.
+
+  <br>
+
+- **Antenna positioning & density:**  
+  Antennas are generated such that complete environment coverage is achieved with the minimum number of devices, ensuring uniform spatial distribution and no coverage gaps.
 
 <br>
 
@@ -34,7 +39,19 @@ We are emulating ***2D indoor and outdoor environments*** with multiple devices 
 
 The path loss exponent $n$ characterises the average rate at which signal power decays with distance and depends on the propagation environment.
 
-In the data generation process, $n$ is sampled once per scenario and remains fixed for all links within that scenario to preserve spatial consistency.
+In the implementation, $n$ is sampled once per **scenario and derived RSSI environment class** and remains fixed for all links that share that class within the scenario.
+
+The derived RSSI environment class is assigned as follows:
+
+- If the target is in an outdoor area (`target_space_type == exterior` or `patio`), the link uses `outdoor` sigma values (1-2).
+<br>
+
+- If the target is in an indoor area (`target_space_type == room` or `building_free`) and `link_state == LOS`, the link uses `indoor_los` sigma values (2-4).
+<br>
+
+- If the target is in an indoor area (`target_space_type == room` or `building_free`) and `link_state == NLOS`, the link uses `indoor_nlos` sigma values (4-8).
+
+`link_state` is computed geometrically per antenna-target link by checking whether the straight path intersects any wall or human obstacle.
 
 We will only use outdoor, Indoor LOS and Indoor NLOS environment types. 
 
@@ -106,12 +123,17 @@ The parameter $\sigma$ represents the standard deviation of shadow fading (in dB
 
 | Environment | $\sigma$ (dB) |
 |------------|---------------|
-| Free space / open outdoor | 1 – 2 |
-| Indoor LOS | 2 – 4 |
-| Indoor NLOS | 4 – 8 |
-| Heavy obstruction | 6 – 10 |
+| Free space / open outdoor | 5 – 7 |
+| Indoor LOS | 8 – 10 |
+| Indoor NLOS | 11 – 13 |
+| Heavy obstruction | 14 – 15 |
 
-The Gaussian noise term is applied independently to each wireless link, while $\sigma$ remains fixed per scenario.
+> **References:**  
+> 1) https://tetcos.com/documentation/v14.4/Propagation-Models/Shadowing%20models.html
+<br>
+> 2) https://en.wikipedia.org/wiki/Log-distance_path_loss_model 
+
+The Gaussian noise term is applied independently to each wireless link, while $\sigma$ remains fixed per scenario and derived RSSI environment class.
 
 <br>
 
@@ -174,7 +196,7 @@ p_r(d) = p(d_0) - 10\hat{n}\log_{10}\!\left(\frac{d}{d_0}\right) + X_{\sigma,i,j
 $$
 
 This ensures:
-- $\sigma$ is **fixed per scenario**
+- $\sigma$ is **fixed per scenario and derived RSSI environment class**
 - $X_{\sigma,i,j}$ is **independent per link**
 
 <br>
@@ -192,39 +214,108 @@ where:
 
 <br>
 
-### Visual Example
+---
 
-```javascript
-const network = {
-  environment: {
-    type: "indoor",
-    losModel: "NLOS",
-    pathLossExponent: 4.2,
-    shadowingStdDev: 6.0
-  },
+### RSSI Position Estimation
 
-  devices: {
-    targetDevice: {
-      id: "T",
-      position: [3.5, -2.0]
-    },
+`position_estimation.py` first converts each RSSI measurement into an estimated range, then solves a weighted multilateration problem.
 
-    otherDevices: {
-      A: { position: [-6.0, 4.5] },
-      B: { position: [8.0, 1.0] },
-      C: { position: [-2.0, -7.5] },
-      D: { position: [5.0, -6.0] }
+<br>
+
+#### 1) Convert RSSI to range
+
+For link $(i,j)$, the code computes the measured excess loss relative to the reference distance as:
+
+$$
+\Delta PL_{i,j} = P_r(d_0) - RSSI_{i,j}
+$$
+
+If obstacle attenuation is present in the table, it is compensated before inversion:
+
+$$
+\Delta PL^{\text{comp}}_{i,j} = \Delta PL_{i,j} - L^{\text{obs}}_{i,j}
+$$
+
+The estimated range is then:
+
+$$
+\hat{d}_{i,j} = d_0 \, 10^{\frac{\Delta PL^{\text{comp}}_{i,j}}{10 n_{i,j}}}
+$$
+
+where:
+- $P_r(d_0)$ is the reference RSSI at distance $d_0$ (`initial_signal_strength_dbm`)
+- $L^{\text{obs}}_{i,j}$ is optional obstacle attenuation (`obstacle_attenuation_db`)
+- $n_{i,j}$ is the path loss exponent for that link
+
+<br>
+
+#### 2) Estimate position by weighted least-squares multilateration
+
+Let antenna positions be $\mathbf{a}_k = (x_k, y_k)$ and estimated ranges be $\hat{d}_k$.
+
+The implementation chooses the reference antenna $r$ as the one with the smallest estimated range and solves the linearized system:
+
+$$
+2(\mathbf{a}_k - \mathbf{a}_r)^\top \hat{\mathbf{p}} = \hat{d}_r^2 - \hat{d}_k^2 + \|\mathbf{a}_k\|^2 - \|\mathbf{a}_r\|^2, \qquad k \neq r
+$$
+
+where $\hat{\mathbf{p}} = (\hat{x}, \hat{y})$ is the estimated target position.
+
+Each equation is weighted using the inverse shadow-fading variance:
+
+$$
+w_k = \frac{1}{\sigma_k^2}
+$$
+
+with $\sigma_k$ taken from `shadow_sigma_db`.
+
+After the linear solve, the code refines the estimate by minimizing the weighted nonlinear range residual:
+
+$$
+\hat{\mathbf{p}} = \arg\min_{\mathbf{p}} \sum_k w_k \left(\|\mathbf{p} - \mathbf{a}_k\| - \hat{d}_k\right)^2
+$$
+
+This is the RSSI positioning method implemented in `position_estimation.py`.
+
+#### UML Diagram
+
+```mermaid
+classDiagram
+    class LinkRSSIRow {
+      +scenario_id
+      +target_id
+      +antenna_x
+      +antenna_y
+      +distance_m
+      +link_state
+      +target_space_type
+      +rssi_env_type
+      +path_loss_exponent_n
+      +shadow_sigma_db
+      +reference_distance_m
+      +initial_signal_strength_dbm
+      +obstacle_attenuation_db
+      +signal_strength_dbm
     }
-  },
 
-  channels: {
-    "T-A": {
-      distance: 11.2,
-      freeSpacePathLoss: 65.8,
-      shadowing: 2.3,
-      pathLoss: 75.5,
-      receivedSignalStrength: -62.3
+    class RSSIPositionEstimator {
+      +estimate_rssi_positions(rssi_df)
+      +_rssi_range_estimates_m(group)
+      +_least_squares_range_position(anchors, ranges, weights)
+      +_refine_range_position(initial, anchors, ranges, weights)
     }
-  }
-};
+
+    class RSSIPositionEstimate {
+      +scenario_id
+      +target_id
+      +rssi_anchor_count
+      +rssi_est_x
+      +rssi_est_y
+      +rssi_residual_rmse_m
+      +rssi_success
+      +rssi_error_m
+    }
+
+    LinkRSSIRow --> RSSIPositionEstimator : input rows
+    RSSIPositionEstimator --> RSSIPositionEstimate : output estimate
 ```

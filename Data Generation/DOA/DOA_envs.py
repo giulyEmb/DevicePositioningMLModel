@@ -206,14 +206,13 @@ def create_scenario_doa_parameters(
     num_array_elements_max: int = DEFAULT_NUM_ARRAY_ELEMENTS_MAX,
     element_spacing_m: Optional[float] = None,
     array_orientation_rad: float = DEFAULT_ARRAY_ORIENTATION_RAD,
-    noise_ranges: Optional[NoiseRangeMap] = None,
 ) -> pd.DataFrame:
     """
-    Sample DOA parameters once per scenario and per derived DOA environment class.
+    Sample scenario-level DOA receiver parameters once per scenario.
 
-    The ULA orientation is fixed by default to global +x broadside. The number of
-    array elements is sampled once per scenario, while angular-noise sigma is
-    sampled once per scenario and DOA environment class.
+    The ULA orientation is fixed by default to global +x broadside. The number
+    of array elements is sampled once per scenario. Link-level angular-noise
+    sigma is sampled separately in `create_link_doa_parameters`.
     """
     if carrier_frequency_hz <= 0:
         raise ValueError("carrier_frequency_hz must be > 0.")
@@ -223,9 +222,6 @@ def create_scenario_doa_parameters(
         raise ValueError("array_orientation_rad must be finite.")
 
     _validate_array_element_range(num_array_elements_min, num_array_elements_max)
-
-    ranges = noise_ranges or DOA_NOISE_SIGMA_DEG_RANGES
-    _validate_noise_ranges(ranges)
 
     wavelength_m = float(propagation_speed_m_per_s) / float(carrier_frequency_hz)
     resolved_element_spacing_m = (
@@ -248,40 +244,32 @@ def create_scenario_doa_parameters(
                 f"Scenario {scenario_id} maps to {len(env_values)} environment types."
             )
 
-        env_type = _normalize_env_type(env_values[0])
+        _normalize_env_type(env_values[0])
         num_array_elements = rng.randint(
             int(num_array_elements_min),
             int(num_array_elements_max),
         )
         doa_env_types = sorted(scenario_df["doa_env_type"].drop_duplicates().tolist())
-        for doa_env_type in doa_env_types:
-            rows.append(
-                {
-                    "scenario_id": scenario_id,
-                    "env_type": env_type,
-                    "doa_env_type": doa_env_type,
-                    "carrier_frequency_hz": float(carrier_frequency_hz),
-                    "propagation_speed_m_per_s": float(propagation_speed_m_per_s),
-                    "wavelength_m": wavelength_m,
-                    "num_array_elements": num_array_elements,
-                    "element_spacing_m": resolved_element_spacing_m,
-                    "array_orientation_rad": wrapped_orientation_rad,
-                    "array_orientation_deg": wrapped_orientation_deg,
-                    "doa_noise_sigma_deg": angular_noise_sigma_given_env_type(
-                        doa_env_type,
-                        noise_ranges=ranges,
-                        rng=rng,
-                    ),
-                }
-            )
+        if not doa_env_types:
+            continue
+        rows.append(
+            {
+                "scenario_id": scenario_id,
+                "carrier_frequency_hz": float(carrier_frequency_hz),
+                "propagation_speed_m_per_s": float(propagation_speed_m_per_s),
+                "wavelength_m": wavelength_m,
+                "num_array_elements": num_array_elements,
+                "element_spacing_m": resolved_element_spacing_m,
+                "array_orientation_rad": wrapped_orientation_rad,
+                "array_orientation_deg": wrapped_orientation_deg,
+            }
+        )
 
     scenario_doa_df = pd.DataFrame(rows)
     if scenario_doa_df.empty:
         return pd.DataFrame(
             columns=[
                 "scenario_id",
-                "env_type",
-                "doa_env_type",
                 "carrier_frequency_hz",
                 "propagation_speed_m_per_s",
                 "wavelength_m",
@@ -289,15 +277,40 @@ def create_scenario_doa_parameters(
                 "element_spacing_m",
                 "array_orientation_rad",
                 "array_orientation_deg",
-                "doa_noise_sigma_deg",
-                "doa_noise_sigma_rad",
             ]
         )
-
-    scenario_doa_df["doa_noise_sigma_rad"] = np.deg2rad(
-        scenario_doa_df["doa_noise_sigma_deg"].astype(float)
-    )
     return scenario_doa_df
+
+
+def create_link_doa_parameters(
+    link_inputs_df: pd.DataFrame,
+    *,
+    seed: Optional[int] = None,
+    noise_ranges: Optional[NoiseRangeMap] = None,
+) -> pd.DataFrame:
+    """
+    Sample DOA angular-noise sigma once per antenna-target link.
+
+    The sampled sigma depends on the derived per-link `doa_env_type`.
+    """
+    ranges = noise_ranges or DOA_NOISE_SIGMA_DEG_RANGES
+    _validate_noise_ranges(ranges)
+
+    rng = random.Random(seed)
+    link_doa_df = link_inputs_df[
+        ["scenario_id", "target_id", "antenna_id", "doa_env_type"]
+    ].copy()
+    link_doa_df["doa_noise_sigma_deg"] = link_doa_df["doa_env_type"].map(
+        lambda env: angular_noise_sigma_given_env_type(
+            env,
+            noise_ranges=ranges,
+            rng=rng,
+        )
+    )
+    link_doa_df["doa_noise_sigma_rad"] = np.deg2rad(
+        link_doa_df["doa_noise_sigma_deg"].astype(float)
+    )
+    return link_doa_df
 
 
 def build_doa_base_table(
@@ -390,19 +403,32 @@ def build_doa_base_table(
         num_array_elements_max=num_array_elements_max,
         element_spacing_m=element_spacing_m,
         array_orientation_rad=DEFAULT_ARRAY_ORIENTATION_RAD,
+    )
+    link_params_df = create_link_doa_parameters(
+        links_df,
+        seed=seed,
         noise_ranges=noise_ranges,
     )
 
     doa_df = links_df.merge(
         scenario_params_df,
-        on=["scenario_id", "env_type", "doa_env_type"],
+        on=["scenario_id"],
         how="left",
         validate="many_to_one",
+    )
+    doa_df = doa_df.merge(
+        link_params_df,
+        on=["scenario_id", "target_id", "antenna_id", "doa_env_type"],
+        how="left",
+        validate="one_to_one",
     )
 
     if doa_df["carrier_frequency_hz"].isna().any():
         missing_count = int(doa_df["carrier_frequency_hz"].isna().sum())
         raise ValueError(f"{missing_count} DOA rows do not have scenario parameters.")
+    if doa_df["doa_noise_sigma_deg"].isna().any():
+        missing_count = int(doa_df["doa_noise_sigma_deg"].isna().sum())
+        raise ValueError(f"{missing_count} DOA rows do not have link noise parameters.")
 
     np_rng = np.random.default_rng(seed)
     doa_df["is_doa_valid"] = (

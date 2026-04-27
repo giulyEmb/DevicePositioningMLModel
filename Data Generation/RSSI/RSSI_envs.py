@@ -49,11 +49,10 @@ PATH_LOSS_EXPONENT_RANGES = {
     "indoor_nlos": (4.0, 6.0),
 }
 
-# Aligned to the project RSSI README's typical shadow-fading values.
 SHADOW_SIGMA_DB_RANGES = {
-    "outdoor": (1.0, 2.0),
-    "indoor_los": (2.0, 4.0),
-    "indoor_nlos": (4.0, 8.0),
+    "outdoor": (5.0, 7.0),
+    "indoor_los": (8.0, 10.0),
+    "indoor_nlos": (11.0, 13.0),
 }
 
 
@@ -64,20 +63,20 @@ def _normalize_env_type(env: str) -> str:
     return normalized
 
 
-def _resolve_rssi_env_type(env_type: str, link_state: str) -> str:
-    env = str(env_type).strip().lower()
+def _resolve_rssi_env_type(target_space_type: str, link_state: str) -> str:
+    space = str(target_space_type).strip().lower()
     state = str(link_state).strip().upper()
 
-    if env in PATH_LOSS_EXPONENT_RANGES:
-        return env
-
-    if env == "outdoor":
+    # Outdoor target areas use the outdoor RSSI class regardless of LOS/NLOS.
+    # Patios are treated as open-air spaces for propagation classification.
+    if space in {"exterior", "patio", "outdoor"}:
         return "outdoor"
 
-    if env == "indoor":
+    # Indoor target areas are further split by per-link blocker geometry.
+    if space in {"room", "building_free", "indoor"}:
         return "indoor_los" if state == "LOS" else "indoor_nlos"
 
-    raise ValueError(f"Unsupported generator env_type: {env_type}")
+    raise ValueError(f"Unsupported target_space_type for RSSI classification: {target_space_type}")
 
 
 def path_loss_exponent_given_env_type(env: str, *, rng: random.Random | None = None) -> float:
@@ -116,6 +115,7 @@ def extract_rssi_link_inputs(data_dir: Union[str, Path]) -> pd.DataFrame:
     - scenario_id
     - distance_m
     - link_state
+    - target_space_type
     """
     data_path = Path(data_dir)
     summary_path = data_path / "env_summary.parquet"
@@ -124,7 +124,7 @@ def extract_rssi_link_inputs(data_dir: Union[str, Path]) -> pd.DataFrame:
     summary_env_df = pd.read_parquet(summary_path, columns=["scenario_id", "env_type"])
     links_df = pd.read_parquet(links_path)
 
-    required_link_cols = {"scenario_id", "distance_m", "link_state"}
+    required_link_cols = {"scenario_id", "distance_m", "link_state", "target_space_type"}
     missing_cols = required_link_cols.difference(links_df.columns)
     if missing_cols:
         missing_list = ", ".join(sorted(missing_cols))
@@ -146,8 +146,11 @@ def extract_rssi_link_inputs(data_dir: Union[str, Path]) -> pd.DataFrame:
         )
 
     merged_df["rssi_env_type"] = [
-        _resolve_rssi_env_type(env_type, link_state)
-        for env_type, link_state in zip(merged_df["env_type"], merged_df["link_state"])
+        _resolve_rssi_env_type(target_space_type, link_state)
+        for target_space_type, link_state in zip(
+            merged_df["target_space_type"],
+            merged_df["link_state"],
+        )
     ]
     return merged_df.copy()
 

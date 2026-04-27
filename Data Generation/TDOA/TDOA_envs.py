@@ -44,7 +44,8 @@ DEFAULT_PROPAGATION_SPEED_M_PER_S = 299_792_458.0
 
 TDOA_NOISE_SIGMA_NS_RANGES = {
     "outdoor": (0.05, 0.20),
-    "indoor": (0.10, 0.50),
+    "indoor_los": (0.10, 0.30),
+    "indoor_nlos": (0.30, 0.50),
 }
 
 REQUIRED_LINK_COLUMNS = {
@@ -59,16 +60,50 @@ REQUIRED_LINK_COLUMNS = {
     "antenna_y",
     "distance_m",
     "link_state",
+    "target_space_type",
 }
 
 NoiseRangeMap = Dict[str, Tuple[float, float]]
 
 
-def _normalize_env_type(env: str) -> str:
+def _normalize_scenario_env_type(env: str) -> str:
+    normalized = str(env).strip().lower()
+    if normalized not in {"indoor", "outdoor"}:
+        raise ValueError(f"Unsupported scenario environment type for TDOA: {env}")
+    return normalized
+
+
+def _normalize_tdoa_env_type(env: str) -> str:
     normalized = str(env).strip().lower()
     if normalized not in TDOA_NOISE_SIGMA_NS_RANGES:
         raise ValueError(f"Unsupported TDOA environment type: {env}")
     return normalized
+
+
+def _normalize_link_state(link_state: str) -> str:
+    normalized = str(link_state).strip().upper()
+    if normalized not in {"LOS", "NLOS"}:
+        raise ValueError(f"Unsupported TDOA link_state: {link_state}")
+    return normalized
+
+
+def _resolve_tdoa_env_type(target_space_type: str, link_state: str) -> str:
+    space = str(target_space_type).strip().lower()
+    state = _normalize_link_state(link_state)
+
+    # Patios and exterior free space are modelled as outdoor links regardless
+    # of blocker geometry, matching the RSSI environment split.
+    if space in {"exterior", "patio", "outdoor"}:
+        return "outdoor"
+
+    # Targets inside the floor-map footprint are split by the per-link LOS/NLOS
+    # collision check.
+    if space in {"room", "building_free", "indoor"}:
+        return "indoor_los" if state == "LOS" else "indoor_nlos"
+
+    raise ValueError(
+        f"Unsupported target_space_type for TDOA classification: {target_space_type}"
+    )
 
 
 def _validate_noise_range(name: str, lo: float, hi: float) -> None:
@@ -92,7 +127,7 @@ def timing_noise_sigma_given_env_type(
     noise_ranges: NoiseRangeMap | None = None,
     rng: random.Random | None = None,
 ) -> float:
-    normalized = _normalize_env_type(env)
+    normalized = _normalize_tdoa_env_type(env)
     ranges = noise_ranges or TDOA_NOISE_SIGMA_NS_RANGES
     lo, hi = ranges[normalized]
     sampler = rng or random
@@ -115,6 +150,7 @@ def extract_tdoa_link_inputs(data_dir: Union[str, Path]) -> pd.DataFrame:
     - antenna_y
     - distance_m
     - link_state
+    - target_space_type
     """
     data_path = Path(data_dir)
     summary_path = data_path / "env_summary.parquet"
@@ -143,37 +179,32 @@ def extract_tdoa_link_inputs(data_dir: Union[str, Path]) -> pd.DataFrame:
             f"{missing_count} link rows do not map to a scenario environment."
         )
 
-    merged_df["env_type"] = merged_df["env_type"].map(_normalize_env_type)
+    merged_df["env_type"] = merged_df["env_type"].map(_normalize_scenario_env_type)
+    merged_df["tdoa_env_type"] = [
+        _resolve_tdoa_env_type(target_space_type, link_state)
+        for target_space_type, link_state in zip(
+            merged_df["target_space_type"],
+            merged_df["link_state"],
+        )
+    ]
     return merged_df.copy()
 
 
 def create_scenario_tdoa_parameters(
     link_inputs_df: pd.DataFrame,
     *,
-    seed: int | None = None,
     propagation_speed_m_per_s: float = DEFAULT_PROPAGATION_SPEED_M_PER_S,
-    noise_ranges: NoiseRangeMap | None = None,
 ) -> pd.DataFrame:
     """
-    Sample TDOA parameters once per scenario and select the scenario reference anchor.
+    Select the scenario reference anchor and attach scenario-level constants.
 
     The reference anchor is the lowest antenna_id in each scenario.
     """
     if propagation_speed_m_per_s <= 0:
         raise ValueError("propagation_speed_m_per_s must be > 0.")
 
-    ranges = noise_ranges or TDOA_NOISE_SIGMA_NS_RANGES
-    _validate_noise_ranges(ranges)
-
-    rng = random.Random(seed)
     rows = []
     for scenario_id, scenario_df in link_inputs_df.groupby("scenario_id", sort=True):
-        env_values = scenario_df["env_type"].drop_duplicates().tolist()
-        if len(env_values) != 1:
-            raise ValueError(
-                f"Scenario {scenario_id} maps to {len(env_values)} environment types."
-            )
-
         antenna_ids = sorted(scenario_df["antenna_id"].drop_duplicates().tolist())
         if len(antenna_ids) < 2:
             raise ValueError(
@@ -181,22 +212,51 @@ def create_scenario_tdoa_parameters(
                 f"Found {len(antenna_ids)}."
             )
 
-        env_type = _normalize_env_type(env_values[0])
         rows.append(
             {
                 "scenario_id": scenario_id,
-                "env_type": env_type,
                 "reference_antenna_id": antenna_ids[0],
-                "tdoa_noise_sigma_ns": timing_noise_sigma_given_env_type(
-                    env_type,
-                    noise_ranges=ranges,
-                    rng=rng,
-                ),
                 "propagation_speed_m_per_s": float(propagation_speed_m_per_s),
             }
         )
 
     return pd.DataFrame(rows)
+
+
+def create_link_tdoa_parameters(
+    link_inputs_df: pd.DataFrame,
+    *,
+    seed: int | None = None,
+    noise_ranges: NoiseRangeMap | None = None,
+) -> pd.DataFrame:
+    """
+    Sample timing-noise sigma and timing noise once per antenna-target link.
+
+    The link-level timing noise is later differenced between the comparison and
+    reference links to form each TDOA measurement.
+    """
+    ranges = noise_ranges or TDOA_NOISE_SIGMA_NS_RANGES
+    _validate_noise_ranges(ranges)
+
+    rng = random.Random(seed)
+    np_rng = np.random.default_rng(seed)
+    link_params_df = link_inputs_df[
+        ["scenario_id", "target_id", "antenna_id", "tdoa_env_type"]
+    ].copy()
+
+    link_params_df["timing_noise_sigma_ns"] = link_params_df["tdoa_env_type"].map(
+        lambda env: timing_noise_sigma_given_env_type(
+            env,
+            noise_ranges=ranges,
+            rng=rng,
+        )
+    )
+    link_params_df["timing_noise_ns"] = np_rng.normal(
+        loc=0.0,
+        scale=link_params_df["timing_noise_sigma_ns"].astype(float).to_numpy(),
+        size=len(link_params_df),
+    )
+    return link_params_df
 
 
 def build_tdoa_base_table(
@@ -206,8 +266,12 @@ def build_tdoa_base_table(
     propagation_speed_m_per_s: float = DEFAULT_PROPAGATION_SPEED_M_PER_S,
     outdoor_noise_sigma_ns_min: float = 0.05,
     outdoor_noise_sigma_ns_max: float = 0.20,
-    indoor_noise_sigma_ns_min: float = 0.10,
-    indoor_noise_sigma_ns_max: float = 0.50,
+    indoor_los_noise_sigma_ns_min: float = 0.10,
+    indoor_los_noise_sigma_ns_max: float = 0.30,
+    indoor_nlos_noise_sigma_ns_min: float = 0.30,
+    indoor_nlos_noise_sigma_ns_max: float = 0.50,
+    indoor_noise_sigma_ns_min: float | None = None,
+    indoor_noise_sigma_ns_max: float | None = None,
 ) -> pd.DataFrame:
     """
     Return one TDOA row per scenario, target, and non-reference antenna.
@@ -219,16 +283,24 @@ def build_tdoa_base_table(
     - reference_antenna_y
     - reference_distance_m
     - reference_link_state
+    - reference_tdoa_env_type
+    - reference_timing_noise_sigma_ns
+    - reference_timing_noise_ns
     - comparison_antenna_id
     - comparison_antenna_label
     - comparison_antenna_x
     - comparison_antenna_y
     - comparison_distance_m
     - comparison_link_state
+    - comparison_tdoa_env_type
+    - comparison_timing_noise_sigma_ns
+    - comparison_timing_noise_ns
     - propagation_speed_m_per_s
     - tdoa_noise_sigma_ns
     - reference_arrival_time_ns
     - comparison_arrival_time_ns
+    - reference_observed_arrival_time_ns
+    - comparison_observed_arrival_time_ns
     - ideal_tdoa_ns
     - tdoa_noise_ns
     - observed_tdoa_ns
@@ -237,14 +309,34 @@ def build_tdoa_base_table(
     if propagation_speed_m_per_s <= 0:
         raise ValueError("propagation_speed_m_per_s must be > 0.")
 
+    if (indoor_noise_sigma_ns_min is None) != (indoor_noise_sigma_ns_max is None):
+        raise ValueError(
+            "indoor_noise_sigma_ns_min and indoor_noise_sigma_ns_max must be provided together."
+        )
+
+    resolved_indoor_los_noise_sigma_ns_min = float(indoor_los_noise_sigma_ns_min)
+    resolved_indoor_los_noise_sigma_ns_max = float(indoor_los_noise_sigma_ns_max)
+    resolved_indoor_nlos_noise_sigma_ns_min = float(indoor_nlos_noise_sigma_ns_min)
+    resolved_indoor_nlos_noise_sigma_ns_max = float(indoor_nlos_noise_sigma_ns_max)
+
+    if indoor_noise_sigma_ns_min is not None and indoor_noise_sigma_ns_max is not None:
+        resolved_indoor_los_noise_sigma_ns_min = float(indoor_noise_sigma_ns_min)
+        resolved_indoor_los_noise_sigma_ns_max = float(indoor_noise_sigma_ns_max)
+        resolved_indoor_nlos_noise_sigma_ns_min = float(indoor_noise_sigma_ns_min)
+        resolved_indoor_nlos_noise_sigma_ns_max = float(indoor_noise_sigma_ns_max)
+
     noise_ranges = {
         "outdoor": (
             float(outdoor_noise_sigma_ns_min),
             float(outdoor_noise_sigma_ns_max),
         ),
-        "indoor": (
-            float(indoor_noise_sigma_ns_min),
-            float(indoor_noise_sigma_ns_max),
+        "indoor_los": (
+            resolved_indoor_los_noise_sigma_ns_min,
+            resolved_indoor_los_noise_sigma_ns_max,
+        ),
+        "indoor_nlos": (
+            resolved_indoor_nlos_noise_sigma_ns_min,
+            resolved_indoor_nlos_noise_sigma_ns_max,
         ),
     }
     _validate_noise_ranges(noise_ranges)
@@ -291,16 +383,25 @@ def build_tdoa_base_table(
 
     scenario_params_df = create_scenario_tdoa_parameters(
         links_df,
-        seed=seed,
         propagation_speed_m_per_s=propagation_speed_m_per_s,
+    )
+    link_params_df = create_link_tdoa_parameters(
+        links_df,
+        seed=seed,
         noise_ranges=noise_ranges,
     )
 
     links_with_params_df = links_df.merge(
         scenario_params_df,
-        on=["scenario_id", "env_type"],
+        on="scenario_id",
         how="left",
         validate="many_to_one",
+    )
+    links_with_params_df = links_with_params_df.merge(
+        link_params_df,
+        on=["scenario_id", "target_id", "antenna_id", "tdoa_env_type"],
+        how="left",
+        validate="one_to_one",
     )
 
     reference_mask = (
@@ -316,6 +417,9 @@ def build_tdoa_base_table(
         "antenna_y",
         "distance_m",
         "link_state",
+        "tdoa_env_type",
+        "timing_noise_sigma_ns",
+        "timing_noise_ns",
     ]
     reference_df = links_with_params_df.loc[reference_mask, reference_cols].rename(
         columns={
@@ -325,6 +429,9 @@ def build_tdoa_base_table(
             "antenna_y": "reference_antenna_y",
             "distance_m": "reference_distance_m",
             "link_state": "reference_link_state",
+            "tdoa_env_type": "reference_tdoa_env_type",
+            "timing_noise_sigma_ns": "reference_timing_noise_sigma_ns",
+            "timing_noise_ns": "reference_timing_noise_ns",
         }
     )
 
@@ -352,8 +459,6 @@ def build_tdoa_base_table(
             f"{missing_count} TDOA comparison rows do not have a reference-anchor link."
         )
 
-    np_rng = np.random.default_rng(seed)
-
     tdoa_df = tdoa_df.rename(
         columns={
             "antenna_id": "comparison_antenna_id",
@@ -362,6 +467,9 @@ def build_tdoa_base_table(
             "antenna_y": "comparison_antenna_y",
             "distance_m": "comparison_distance_m",
             "link_state": "comparison_link_state",
+            "tdoa_env_type": "comparison_tdoa_env_type",
+            "timing_noise_sigma_ns": "comparison_timing_noise_sigma_ns",
+            "timing_noise_ns": "comparison_timing_noise_ns",
         }
     )
 
@@ -384,14 +492,25 @@ def build_tdoa_base_table(
         / tdoa_df["propagation_speed_m_per_s"].astype(float)
         * 1e9
     )
-    tdoa_df["tdoa_noise_ns"] = np_rng.normal(
-        loc=0.0,
-        scale=tdoa_df["tdoa_noise_sigma_ns"].astype(float).to_numpy(),
-        size=len(tdoa_df),
+    tdoa_df["reference_observed_arrival_time_ns"] = (
+        tdoa_df["reference_arrival_time_ns"].astype(float)
+        + tdoa_df["reference_timing_noise_ns"].astype(float)
+    )
+    tdoa_df["comparison_observed_arrival_time_ns"] = (
+        tdoa_df["comparison_arrival_time_ns"].astype(float)
+        + tdoa_df["comparison_timing_noise_ns"].astype(float)
+    )
+    tdoa_df["tdoa_noise_sigma_ns"] = np.sqrt(
+        np.square(tdoa_df["reference_timing_noise_sigma_ns"].astype(float))
+        + np.square(tdoa_df["comparison_timing_noise_sigma_ns"].astype(float))
+    )
+    tdoa_df["tdoa_noise_ns"] = (
+        tdoa_df["comparison_timing_noise_ns"].astype(float)
+        - tdoa_df["reference_timing_noise_ns"].astype(float)
     )
     tdoa_df["observed_tdoa_ns"] = (
-        tdoa_df["ideal_tdoa_ns"].astype(float)
-        + tdoa_df["tdoa_noise_ns"].astype(float)
+        tdoa_df["comparison_observed_arrival_time_ns"].astype(float)
+        - tdoa_df["reference_observed_arrival_time_ns"].astype(float)
     )
 
     output_cols = [
@@ -406,16 +525,24 @@ def build_tdoa_base_table(
         "reference_antenna_y",
         "reference_distance_m",
         "reference_link_state",
+        "reference_tdoa_env_type",
+        "reference_timing_noise_sigma_ns",
+        "reference_timing_noise_ns",
         "comparison_antenna_id",
         "comparison_antenna_label",
         "comparison_antenna_x",
         "comparison_antenna_y",
         "comparison_distance_m",
         "comparison_link_state",
+        "comparison_tdoa_env_type",
+        "comparison_timing_noise_sigma_ns",
+        "comparison_timing_noise_ns",
         "propagation_speed_m_per_s",
         "tdoa_noise_sigma_ns",
         "reference_arrival_time_ns",
         "comparison_arrival_time_ns",
+        "reference_observed_arrival_time_ns",
+        "comparison_observed_arrival_time_ns",
         "ideal_tdoa_ns",
         "tdoa_noise_ns",
         "observed_tdoa_ns",
@@ -450,25 +577,49 @@ def main() -> None:
         "--outdoor-noise-sigma-ns-min",
         type=float,
         default=0.05,
-        help="Minimum outdoor scenario timing-noise sigma in nanoseconds.",
+        help="Minimum outdoor link timing-noise sigma in nanoseconds.",
     )
     parser.add_argument(
         "--outdoor-noise-sigma-ns-max",
         type=float,
         default=0.20,
-        help="Maximum outdoor scenario timing-noise sigma in nanoseconds.",
+        help="Maximum outdoor link timing-noise sigma in nanoseconds.",
+    )
+    parser.add_argument(
+        "--indoor-los-noise-sigma-ns-min",
+        type=float,
+        default=0.10,
+        help="Minimum indoor LOS link timing-noise sigma in nanoseconds.",
+    )
+    parser.add_argument(
+        "--indoor-los-noise-sigma-ns-max",
+        type=float,
+        default=0.30,
+        help="Maximum indoor LOS link timing-noise sigma in nanoseconds.",
+    )
+    parser.add_argument(
+        "--indoor-nlos-noise-sigma-ns-min",
+        type=float,
+        default=0.30,
+        help="Minimum indoor NLOS link timing-noise sigma in nanoseconds.",
+    )
+    parser.add_argument(
+        "--indoor-nlos-noise-sigma-ns-max",
+        type=float,
+        default=0.50,
+        help="Maximum indoor NLOS link timing-noise sigma in nanoseconds.",
     )
     parser.add_argument(
         "--indoor-noise-sigma-ns-min",
         type=float,
-        default=0.10,
-        help="Minimum indoor scenario timing-noise sigma in nanoseconds.",
+        default=None,
+        help="Legacy alias. If set with --indoor-noise-sigma-ns-max, applies the same range to both indoor LOS and indoor NLOS links.",
     )
     parser.add_argument(
         "--indoor-noise-sigma-ns-max",
         type=float,
-        default=0.50,
-        help="Maximum indoor scenario timing-noise sigma in nanoseconds.",
+        default=None,
+        help="Legacy alias. If set with --indoor-noise-sigma-ns-min, applies the same range to both indoor LOS and indoor NLOS links.",
     )
     parser.add_argument(
         "--output",
@@ -497,6 +648,10 @@ def main() -> None:
         propagation_speed_m_per_s=args.propagation_speed_m_per_s,
         outdoor_noise_sigma_ns_min=args.outdoor_noise_sigma_ns_min,
         outdoor_noise_sigma_ns_max=args.outdoor_noise_sigma_ns_max,
+        indoor_los_noise_sigma_ns_min=args.indoor_los_noise_sigma_ns_min,
+        indoor_los_noise_sigma_ns_max=args.indoor_los_noise_sigma_ns_max,
+        indoor_nlos_noise_sigma_ns_min=args.indoor_nlos_noise_sigma_ns_min,
+        indoor_nlos_noise_sigma_ns_max=args.indoor_nlos_noise_sigma_ns_max,
         indoor_noise_sigma_ns_min=args.indoor_noise_sigma_ns_min,
         indoor_noise_sigma_ns_max=args.indoor_noise_sigma_ns_max,
     )

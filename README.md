@@ -73,7 +73,8 @@ The generated network environments will be
 used to produce multiple position estimates. For each network scenario, the
 position of the same target device will be calculated using three indoor
 positioning methods: Received Signal Strength Indicators (RSSI), Time Difference
-of Arrival (TDOA), and Direction/Angle of Arrival (DOA/AOA).
+of Arrival (TDOA), and- The grid cannot be larger than 6400 m^2
+- The grid cannot be smaller than 400 m^2 Direction/Angle of Arrival (DOA/AOA).
 
 - **Risk**: Emulated environments may oversimplify network conditions
 affecting the performance of some positioning methods more than
