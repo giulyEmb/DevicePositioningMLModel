@@ -12,6 +12,9 @@ Inputs:
 - links_tdoa.parquet for TDOA
 - links_doa.parquet for DOA/AOA
 
+Run using:
+python3 "Data Generation/position_estimation_plot.py" --data-dir "Data Generation/generated_network_scenarios_with_plots" --scenario-id scenario_0001 --target-id 2 --method rssi
+
 Output:
 - A PNG plot saved to the requested path or to
   <data-dir>/plots/position_estimation/<scenario>_<target>_<method>.png
