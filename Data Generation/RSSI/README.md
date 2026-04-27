@@ -130,7 +130,6 @@ The parameter $\sigma$ represents the standard deviation of shadow fading (in dB
 
 > **References:**  
 > 1) https://tetcos.com/documentation/v14.4/Propagation-Models/Shadowing%20models.html
-<br>
 > 2) https://en.wikipedia.org/wiki/Log-distance_path_loss_model 
 
 The Gaussian noise term is applied independently to each wireless link, while $\sigma$ remains fixed per scenario and derived RSSI environment class.
