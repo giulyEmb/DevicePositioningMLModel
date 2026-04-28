@@ -95,7 +95,7 @@ For v1 data generation, each antenna-target link is converted into a global
 bearing angle:
 
 $$
-\theta_{\text{bearing}} = \operatorname{atan2}(y_T - y_i, x_T - x_i)
+\theta_{\text{bearing}} = \mathrm{atan2}(y_T - y_i, x_T - x_i)
 $$
 
 where:
@@ -113,21 +113,21 @@ $$
 The true DOA relative to the antenna array is:
 
 $$
-\theta_{\text{doa}} = \operatorname{wrap}(\theta_{\text{bearing}} - \psi_i)
+\theta_{\text{doa}} = \mathrm{wrap}(\theta_{\text{bearing}} - \psi_i)
 $$
 
 The observed noisy DOA is:
 
 $$
 \theta_{\text{doa}}^{\text{obs}} =
-\operatorname{wrap}(\theta_{\text{doa}} + \epsilon_\theta)
+\mathrm{wrap}(\theta_{\text{doa}} + \epsilon_\theta)
 $$
 
 The observed global bearing is:
 
 $$
 \theta_{\text{bearing}}^{\text{obs}} =
-\operatorname{wrap}(\theta_{\text{doa}}^{\text{obs}} + \psi_i)
+\mathrm{wrap}(\theta_{\text{doa}}^{\text{obs}} + \psi_i)
 $$
 
 All angle columns are wrapped to:
