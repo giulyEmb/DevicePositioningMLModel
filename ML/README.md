@@ -1,13 +1,5 @@
 # ML Fusion Training in Colab
 
-This directory contains the first-pass training workflow for the ML positioning
-model:
-
-- `ml_fusion_colab_pipeline.ipynb`: beginner-friendly Google Colab notebook
-  for grouped training and evaluation.
-
-## What The Notebook Does
-
 The notebook:
 
 1. Loads `ml_dataset.parquet`, which already contains one row per
@@ -23,9 +15,9 @@ The notebook:
 
 ## Important Rules
 
-- Use the full 100-scenario dataset for the real experiment.
-- Do not random-split rows across train and test.
-- Do not use target or leakage columns as inputs.
+- Full 100-scenario dataset must be use for the real experiment.
+- Random-spliting rows across training and testing sets must be avoided.
+- Avoid / block data which may squew unrealistic performance of the model.
 
 The notebook explicitly excludes:
 
@@ -37,9 +29,7 @@ The notebook explicitly excludes:
 
 ## Colab Usage
 
-Open `ml_fusion_colab_pipeline.ipynb` in Google Colab, update `DATA_PATH` so it
-points to your `ml_dataset.parquet` file, and run the cells from top to bottom.
+Open `ml_fusion_colab_pipeline.ipynb` in Google Colab, update `DATA_PATH` so it points to the expected `ml_dataset.parquet` (output from data generation pipelin) file, and run the cells from top to bottom.
 
 The notebook writes `ml_predictions.parquet` into the same directory as
-`ml_dataset.parquet`, so it stays compatible with
-`Data Generation/evaluate_positioning_performance.py`.
+`ml_dataset.parquet`, so it stays compatible with `Data Generation/evaluate_positioning_performance.py` for plotting and evaluation stages.
