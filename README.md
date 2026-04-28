@@ -4,7 +4,7 @@
 The Global Positioning System (GPS) is widely used for outdoor positioning and
 navigation. However, GPS relies on satellite signals that are significantly attenuated
 by buildings and obstacles, making it unreliable indoors. As a result, alternative
-approaches are required to enable accurate device positioning in scenarios with multipath interference and signal attenuation [4].
+approaches are required to enable accurate device positioning in scenarios with LOS/NLOS conditions and signal attenuation [4].
 
 This project aims to address the limitations of GPS by developing a machine learning
 (ML)-based positioning prediction model that operates independently of satellite
@@ -62,9 +62,7 @@ method-specific RSSI, TDOA, and DOA/AOA measurement generation.
 - **Risk**: Failing to represent realistic network conditions or introducing bias by lacking enough variation in the generated data.
 
 - **Mitigation**: Generating data that offers a representative snapshot of
-diverse network reception conditions, including varying levels of noise,
-interference, and propagation conditions, to ensure sufficient diversity
-and relevance [1].
+diverse network reception conditions, including varying levels of noise, obstructions and antenna range coverage, to ensure sufficient diversity and relevance [1].
 
 <br>
 
