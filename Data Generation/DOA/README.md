@@ -443,10 +443,10 @@ $$
 
 ### 3) Weighting by per-link angular uncertainty
 
-The code reads
+The code reads `noise_sigma_rad`
 
 $$
-\sigma_i = \texttt{doa\_noise\_sigma\_rad}
+\sigma_i
 $$
 
 and assigns weight
@@ -599,43 +599,3 @@ In this project, MUSIC provides the theoretical basis for array-based DOA, but
 the implemented data-generation layer uses the geometric bearing plus angular
 noise approximation. Full snapshot, covariance, pseudospectrum, and peak-search
 simulation can be added later as a separate validation or high-fidelity mode.
-
-<br>
-
-#### Conceptual Example
-
-```javascript
-const network = {
-  environment: {
-    carrier_frequency_hz: 5.5e9,
-    propagation_speed_m_per_s: 299792458.0
-  },
-
-  anchor: {
-    id: "antenna_0",
-    position: [0.0, 0.0],
-    antenna_array: {
-      type: "ULA",
-      num_array_elements: 8,
-      element_spacing_m: 0.02725,
-      array_orientation_deg: 0.0
-    }
-  },
-
-  target_device: {
-    id: "target_00001",
-    position: [10.0, 10.0]
-  },
-
-  doa_measurement: {
-    doa_env_type: "indoor_los",
-    true_bearing_deg: 45.0,
-    true_doa_deg: 45.0,
-    doa_noise_sigma_deg: 3.0,
-    doa_noise_deg: -1.2,
-    observed_doa_deg: 43.8,
-    observed_bearing_deg: 43.8,
-    is_doa_valid: true
-  }
-};
-```
