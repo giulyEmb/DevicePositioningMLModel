@@ -333,10 +333,10 @@ $$
 \mathbf{a}_i = (x_i, y_i)
 $$
 
-and observed global bearing
+and observed global bearing from the `observed_bearing_rad` column
 
 $$
-\theta_i = \texttt{observed\_bearing\_rad}
+\theta_i
 $$
 
 the direction vector of the bearing line is
