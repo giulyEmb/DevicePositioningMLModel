@@ -64,7 +64,7 @@ We will only use outdoor, Indoor LOS and Indoor NLOS environment types.
 | Indoor NLOS | Multiple walls, partitions | 4.0 – 6.0 |
 
 > **Reference:**  
-> https://ieeexplore.ieee.org/document/5044933 
+> https://www.gaussianwaves.com/2013/09/friss-free-space-propagation-model/
 
 <br>
 
