@@ -245,14 +245,8 @@ def _rssi_range_estimates_m(group: pd.DataFrame) -> np.ndarray:
         group["initial_signal_strength_dbm"].astype(float).to_numpy()
         - group["signal_strength_dbm"].astype(float).to_numpy()
     )
-    obstacle_loss_db = (
-        group["obstacle_attenuation_db"].astype(float).to_numpy()
-        if "obstacle_attenuation_db" in group.columns
-        else np.zeros(len(group), dtype=float)
-    )
     exponent_n = group["path_loss_exponent_n"].astype(float).to_numpy()
-    compensated_loss_db = path_loss_db - obstacle_loss_db
-    exponent = compensated_loss_db / np.maximum(10.0 * exponent_n, EPSILON)
+    exponent = path_loss_db / np.maximum(10.0 * exponent_n, EPSILON)
     exponent = np.clip(exponent, -6.0, 6.0)
     return reference_distance * np.power(10.0, exponent)
 

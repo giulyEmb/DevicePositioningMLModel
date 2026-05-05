@@ -274,21 +274,19 @@ $$
 \Delta PL_{i,j} = P_r(d_0) - RSSI_{i,j}
 $$
 
-If obstacle attenuation is present in the table, it is compensated before inversion:
-
-$$
-\Delta PL^{\text{comp}}_{i,j} = \Delta PL_{i,j} - L^{\text{obs}}_{i,j}
-$$
+Obstacle attenuation is intentionally not compensated during conventional RSSI
+positioning, because the per-link obstruction loss depends on the unknown target
+location. This keeps the RSSI baseline inference-safe and lets material loss
+affect the range estimate.
 
 The estimated range is then:
 
 $$
-\hat{d}_{i,j} = d_0 \, 10^{\frac{\Delta PL^{\text{comp}}_{i,j}}{10 n_{i,j}}}
+\hat{d}_{i,j} = d_0 \, 10^{\frac{\Delta PL_{i,j}}{10 n_{i,j}}}
 $$
 
 where:
 - $P_r(d_0)$ is the reference RSSI at distance $d_0$ (`initial_signal_strength_dbm`)
-- $L^{\text{obs}}_{i,j}$ is optional obstacle attenuation (`obstacle_attenuation_db`)
 - $n_{i,j}$ is the path loss exponent for that link
 
 <br>
