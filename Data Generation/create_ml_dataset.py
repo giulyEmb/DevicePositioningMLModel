@@ -197,6 +197,14 @@ def _rssi_features(rssi_df: pd.DataFrame) -> pd.DataFrame:
         "obstacle_attenuation_db": 0.0,
         "wall_attenuation_db": 0.0,
         "human_attenuation_db": 0.0,
+        "door_attenuation_db": 0.0,
+        "window_attenuation_db": 0.0,
+        "door_blocker_count": 0,
+        "window_blocker_count": 0,
+        "wall_loss_db": 0.0,
+        "human_loss_db": 0.0,
+        "door_loss_db": 0.0,
+        "window_loss_db": 0.0,
     }
     prepared_df = rssi_df.copy()
     for column, default in optional_cols.items():
@@ -218,6 +226,16 @@ def _rssi_features(rssi_df: pd.DataFrame) -> pd.DataFrame:
         rssi_obstacle_attenuation_max_db=("obstacle_attenuation_db", "max"),
         rssi_wall_attenuation_mean_db=("wall_attenuation_db", "mean"),
         rssi_human_attenuation_mean_db=("human_attenuation_db", "mean"),
+        rssi_door_attenuation_mean_db=("door_attenuation_db", "mean"),
+        rssi_window_attenuation_mean_db=("window_attenuation_db", "mean"),
+        rssi_door_blocker_mean=("door_blocker_count", "mean"),
+        rssi_door_blocker_max=("door_blocker_count", "max"),
+        rssi_window_blocker_mean=("window_blocker_count", "mean"),
+        rssi_window_blocker_max=("window_blocker_count", "max"),
+        rssi_wall_loss_mean_db=("wall_loss_db", "mean"),
+        rssi_human_loss_mean_db=("human_loss_db", "mean"),
+        rssi_door_loss_mean_db=("door_loss_db", "mean"),
+        rssi_window_loss_mean_db=("window_loss_db", "mean"),
     ).reset_index()
     spread_df = grouped.agg(
         rssi_signal_std_dbm=("signal_strength_dbm", _std_or_zero),

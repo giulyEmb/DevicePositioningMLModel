@@ -100,7 +100,13 @@ The evaluator writes:
 ## Attenuation Scope
 
 The current implementation uses floor-plan geometry to classify links as LOS or
-NLOS and to count wall and human blockers. RSSI can apply uniform wall and human
-attenuation through `--wall-loss-db` and `--human-loss-db`; by default these are
-`0.0`, so no additional obstacle attenuation is applied. Material-specific
-attenuation coefficients are not currently modelled.
+NLOS and to count wall and human blockers. RSSI applies material-specific
+attenuation by default: ordinary brick walls (`20 dB`), solid wood doors
+(`15 dB`), ordinary glass windows (`7 dB`), and frequency-projected human
+attenuation from `17.22 dB` at `2.45 GHz` using `4.75 dB/GHz`.
+
+Door and window crossings are computed inside `RSSI_envs.py` from
+`floor_plan_elements.parquet` and are RSSI-only: they do not change the shared
+`links.parquet` LOS/NLOS state used by TDOA and DOA. The attenuation defaults
+can be overridden with `--wall-loss-db`, `--human-loss-db`, `--door-loss-db`,
+and `--window-loss-db`; passing `0` disables that material.

@@ -51,7 +51,7 @@ The derived RSSI environment class is assigned as follows:
 
 - If the target is in an indoor area (`target_space_type == room` or `building_free`) and `link_state == NLOS`, the link uses `indoor_nlos` sigma values (4-8).
 
-`link_state` is computed geometrically per antenna-target link by checking whether the straight path intersects any wall or human obstacle.
+`link_state` is computed geometrically per antenna-target link by checking whether the straight path intersects any wall or human obstacle. Door and window intersections are added in the RSSI layer for material attenuation only, so they do not change the shared `links.parquet` LOS/NLOS classification used by other positioning methods.
 
 We will only use outdoor, Indoor LOS and Indoor NLOS environment types. 
 
@@ -200,6 +200,51 @@ This ensures:
 
 <br>
 
+### Material-Specific Obstacle Attenuation
+
+RSSI applies deterministic attenuation for each material obstruction crossed by the antenna-target line segment:
+
+$$
+L^{\text{obs}}_{i,j} =
+N_{\text{wall}} L_{\text{wall}} +
+N_{\text{human}} L_{\text{human}} +
+N_{\text{door}} L_{\text{door}} +
+N_{\text{window}} L_{\text{window}}
+$$
+
+where the counts are stored as blocker-count columns and the total is stored as `obstacle_attenuation_db`.
+
+Default attenuation coefficients:
+
+| Obstruction | Material assumption | Default attenuation |
+|-------------|---------------------|---------------------|
+| Wall | Ordinary brick wall | 20 dB |
+| Door | Solid wood door | 15 dB |
+| Window | Ordinary glass | 7 dB |
+| Human | Frequency-projected body attenuation | `17.22 + 4.75 * (freq_mhz / 1000 - 2.45)` dB |
+
+The human coefficient is based on 17.22 dB average attenuation at 2.45 GHz and a linear increase of 4.75 dB/GHz. This gives approximately 29.33 dB at 5.0 GHz and 31.71 dB at the current default 5.5 GHz.
+
+> Reference: 
+> 1) https://www.winstars.com/en_us/support/faq/details/c3f972a94847dbe3df04a5ac4e55d516.html 
+> 2) https://essay.utwente.nl/fileshare/file/66071/Dove_MA_TE.pdf
+
+Walls and humans are counted in `links.parquet`. Doors and windows are read from `floor_plan_elements.parquet` by `RSSI_envs.py` and counted only for RSSI attenuation. If `floor_plan_elements.parquet` is absent, door/window counts default to zero and RSSI generation continues with a warning.
+
+The defaults can be overridden or disabled:
+
+```bash
+python3 "Data Generation/RSSI/RSSI_envs.py" \
+  --data-dir "Data Generation/generated_network_scenarios" \
+  --wall-loss-db 20 \
+  --door-loss-db 15 \
+  --window-loss-db 7
+```
+
+Passing `--wall-loss-db 0`, `--human-loss-db 0`, `--door-loss-db 0`, or `--window-loss-db 0` disables that material's deterministic attenuation.
+
+<br>
+
 ### Calculating RSSI
 
 $$
@@ -293,6 +338,16 @@ classDiagram
       +shadow_sigma_db
       +reference_distance_m
       +initial_signal_strength_dbm
+      +wall_loss_db
+      +human_loss_db
+      +door_loss_db
+      +window_loss_db
+      +door_blocker_count
+      +window_blocker_count
+      +wall_attenuation_db
+      +human_attenuation_db
+      +door_attenuation_db
+      +window_attenuation_db
       +obstacle_attenuation_db
       +signal_strength_dbm
     }
