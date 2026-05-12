@@ -6,11 +6,10 @@ Compare RSSI, TDOA, DOA/AOA, and optional ML positioning performance using
 2D localisation error in metres.
 
 Input tables:
-- ml_dataset.parquet if available, otherwise position_estimates.parquet
+- position_estimates.parquet for conventional RSSI/TDOA/DOA baselines
+- ml_dataset.parquet if available for non-leaking scenario context
 - optional ML predictions file with scenario_id, target_id, and ML estimate
   coordinates
-
-  NOTE: This will be updated once the ML pipeline and prediction output formats are done.
 
 Outputs:
 - method_performance_summary.csv
@@ -99,27 +98,48 @@ def _read_table(path: Union[str, Path], required: Iterable[str], table_name: str
 
 def _input_dataset_path(data_dir: Union[str, Path]) -> Path:
     data_path = Path(data_dir)
-    ml_dataset_path = data_path / "ml_dataset.parquet"
-    if ml_dataset_path.exists():
-        return ml_dataset_path
-
     estimates_path = data_path / "position_estimates.parquet"
     if estimates_path.exists():
         return estimates_path
 
+    ml_dataset_path = data_path / "ml_dataset.parquet"
+    if ml_dataset_path.exists():
+        return ml_dataset_path
+
     raise FileNotFoundError(
-        f"Could not find {ml_dataset_path} or {estimates_path}. "
+        f"Could not find {estimates_path} or {ml_dataset_path}. "
         "Run position estimation and ML dataset generation first."
     )
 
 
 def _read_base_dataset(data_dir: Union[str, Path]) -> pd.DataFrame:
-    path = _input_dataset_path(data_dir)
-    return _read_table(
+    data_path = Path(data_dir)
+    path = _input_dataset_path(data_path)
+    base_df = _read_table(
         path,
         ["scenario_id", "target_id", "target_x", "target_y"],
         path.name,
     )
+    ml_dataset_path = data_path / "ml_dataset.parquet"
+    if ml_dataset_path.exists():
+        context_df = _read_table(
+            ml_dataset_path,
+            ["scenario_id", "target_id", "target_x", "target_y"],
+            "ml_dataset.parquet",
+        )
+        context_cols = [
+            column
+            for column in ["env_type"]
+            if column in context_df.columns and column not in base_df.columns
+        ]
+        if context_cols:
+            base_df = base_df.merge(
+                context_df[[*KEY_COLUMNS, *context_cols]].drop_duplicates(KEY_COLUMNS),
+                on=KEY_COLUMNS,
+                how="left",
+                validate="one_to_one",
+            )
+    return base_df
 
 
 def _resolve_ml_estimate_columns(predictions_df: pd.DataFrame) -> Optional[Tuple[str, str]]:
@@ -629,7 +649,7 @@ def main() -> None:
         "--data-dir",
         type=str,
         default="generated_network_scenarios",
-        help="Directory containing position_estimates.parquet or ml_dataset.parquet.",
+        help="Directory containing position_estimates.parquet, ml_dataset.parquet, and optional ML predictions.",
     )
     parser.add_argument(
         "--predictions-path",

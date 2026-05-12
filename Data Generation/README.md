@@ -31,14 +31,18 @@ python3 "Data Generation/DOA/DOA_envs.py" --data-dir "generated_network_scenario
 python3 "Data Generation/position_estimation.py" --data-dir "generated_network_scenarios"
 ```
 
-4. Build the labelled ML dataset:
+4. Build the labelled ML dataset from target labels and leakage-safe observed
+   telemetry. The table keeps aggregate summaries and wide per-antenna/per-pair
+   features such as `rssi_antenna_0_signal_dbm`,
+   `doa_antenna_0_bearing_sin`, and `tdoa_ref_0_cmp_1_observed_ns`:
 
 ```bash
 python3 "Data Generation/create_ml_dataset.py" --data-dir "generated_network_scenarios"
 ```
 
 5. Validate that table counts, labels, measurements, estimates, and ML rows are
-   consistent:
+   consistent, and that the ML dataset does not contain conventional estimate
+   or simulator-only leakage columns:
 
 ```bash
 python3 "Data Generation/validate_generation_outputs.py" --data-dir "generated_network_scenarios"
@@ -65,7 +69,11 @@ python3 "Data Generation/evaluate_positioning_performance.py" --data-dir "genera
 - `links_doa.parquet`: DOA/AOA bearing measurements per antenna-target link.
 - `position_estimates.parquet`: one row per target with conventional RSSI,
   TDOA, and DOA/AOA `(x, y)` estimates and error metrics.
-- `ml_dataset.parquet`: one labelled row per target for the ML pipeline.
+- `ml_dataset.parquet`: one labelled row per target for the ML pipeline. This
+  table uses `targets.parquet` for `target_x`/`target_y` labels and excludes
+  conventional RSSI/TDOA/DOA estimates, error metrics, true-distance geometry,
+  path-loss internals, attenuation decompositions, noise parameters, ideal
+  solver-generation values, and true arrival-time fields.
 - `evaluation/`: CSV summaries and plots comparing positioning error across
   RSSI, TDOA, DOA/AOA, and optional ML predictions.
 
