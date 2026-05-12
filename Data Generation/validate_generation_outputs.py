@@ -10,7 +10,7 @@ Checks:
 - TDOA row counts match target_count * (antenna_count - 1).
 - Required measurement columns exist and are populated.
 - position_estimates.parquet and ml_dataset.parquet contain one row per target.
-- ML labels and conventional estimate/error columns are present.
+- ML labels are present and conventional estimate/leakage columns are absent.
 
 Usage:
 python3 "Data Generation/validate_generation_outputs.py" --data-dir "generated_network_scenarios"
@@ -32,6 +32,8 @@ import pandas as pd
 
 
 KEY_COLUMNS = ["scenario_id", "target_id"]
+LABEL_COLUMNS = ["target_x", "target_y"]
+ML_IDENTIFIER_AND_LABEL_COLUMNS = [*KEY_COLUMNS, *LABEL_COLUMNS]
 
 
 def _require_columns(df: pd.DataFrame, required: Iterable[str], table_name: str) -> None:
@@ -64,6 +66,55 @@ def _check_unique_targets(df: pd.DataFrame, table_name: str) -> None:
     if duplicates.any():
         duplicate_count = int(duplicates.sum())
         raise ValueError(f"{table_name} has {duplicate_count} duplicate scenario-target rows.")
+
+
+def _is_forbidden_ml_feature(column: str) -> bool:
+    if column in ML_IDENTIFIER_AND_LABEL_COLUMNS:
+        return False
+    forbidden_exact = {
+        "link_count",
+        "rssi_anchor_count",
+        "tdoa_anchor_count",
+        "doa_anchor_count",
+    }
+    forbidden_tokens = (
+        "distance",
+        "path_loss",
+        "attenuation",
+        "blocker",
+        "loss",
+        "noise",
+        "sigma",
+        "ideal",
+        "arrival_time",
+        "link_state",
+    )
+    forbidden_prefixes = ("link_", "rssi_est", "tdoa_est", "doa_est", "true_")
+    forbidden_suffixes = (
+        "_est_x",
+        "_est_y",
+        "_error_m",
+        "_residual_rmse_m",
+        "_success",
+        "_env_type",
+    )
+    return (
+        column in forbidden_exact
+        or column.startswith(forbidden_prefixes)
+        or column.endswith(forbidden_suffixes)
+        or any(token in column for token in forbidden_tokens)
+    )
+
+
+def _check_ml_dataset_has_no_leakage_columns(ml_dataset_df: pd.DataFrame) -> None:
+    forbidden_columns = sorted(
+        column for column in ml_dataset_df.columns if _is_forbidden_ml_feature(column)
+    )
+    if forbidden_columns:
+        forbidden_list = ", ".join(forbidden_columns)
+        raise ValueError(
+            f"ml_dataset.parquet contains leakage or simulator-only columns: {forbidden_list}"
+        )
 
 
 def _expected_counts(env_summary_df: pd.DataFrame) -> pd.DataFrame:
@@ -123,6 +174,7 @@ def validate_generation_outputs(data_dir: Union[str, Path]) -> None:
         "env_summary",
         ["scenario_id", "target_count", "antenna_count"],
     )
+    targets_df = _read_table(data_dir, "targets", ["scenario_id", "target_id"])
     links_df = _read_table(data_dir, "links", ["scenario_id", "target_id"])
     rssi_df = _read_table(
         data_dir,
@@ -161,21 +213,7 @@ def validate_generation_outputs(data_dir: Union[str, Path]) -> None:
     ml_dataset_df = _read_table(
         data_dir,
         "ml_dataset",
-        [
-            "scenario_id",
-            "target_id",
-            "target_x",
-            "target_y",
-            "rssi_est_x",
-            "rssi_est_y",
-            "rssi_error_m",
-            "tdoa_est_x",
-            "tdoa_est_y",
-            "tdoa_error_m",
-            "doa_est_x",
-            "doa_est_y",
-            "doa_error_m",
-        ],
+        ML_IDENTIFIER_AND_LABEL_COLUMNS,
     )
 
     counts_df = _expected_counts(env_summary_df)
@@ -225,9 +263,15 @@ def validate_generation_outputs(data_dir: Union[str, Path]) -> None:
             "links_doa.parquet",
         )
 
+    _check_unique_targets(targets_df, "targets.parquet")
     _check_unique_targets(estimates_df, "position_estimates.parquet")
     _check_unique_targets(ml_dataset_df, "ml_dataset.parquet")
     expected_target_total = int(counts_df["target_count"].sum())
+    if len(targets_df) != expected_target_total:
+        raise ValueError(
+            f"targets.parquet row count mismatch: "
+            f"expected {expected_target_total}, got {len(targets_df)}."
+        )
     if len(estimates_df) != expected_target_total:
         raise ValueError(
             f"position_estimates.parquet row count mismatch: "
@@ -240,7 +284,8 @@ def validate_generation_outputs(data_dir: Union[str, Path]) -> None:
         )
 
     _check_no_missing(estimates_df, ["target_x", "target_y"], "position_estimates.parquet")
-    _check_no_missing(ml_dataset_df, ["target_x", "target_y"], "ml_dataset.parquet")
+    _check_no_missing(ml_dataset_df, LABEL_COLUMNS, "ml_dataset.parquet")
+    _check_ml_dataset_has_no_leakage_columns(ml_dataset_df)
 
     for method in ("rssi", "tdoa", "doa"):
         success_col = f"{method}_success"

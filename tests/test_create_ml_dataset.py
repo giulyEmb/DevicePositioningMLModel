@@ -1,6 +1,8 @@
 from __future__ import annotations
 import importlib.util
+import math
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 import pandas as pd
@@ -16,83 +18,190 @@ sys.modules[SPEC.name] = CREATE_ML_DATASET
 SPEC.loader.exec_module(CREATE_ML_DATASET)
 
 
-def _base_rssi_rows() -> list[dict[str, object]]:
-    return [
-        {
-            "scenario_id": "s1",
-            "target_id": 1,
-            "signal_strength_dbm": -40.0,
-            "path_loss_db_with_noise": 70.0,
-            "path_loss_exponent_n": 2.0,
-            "shadow_sigma_db": 6.0,
-        },
-        {
-            "scenario_id": "s1",
-            "target_id": 1,
-            "signal_strength_dbm": -50.0,
-            "path_loss_db_with_noise": 80.0,
-            "path_loss_exponent_n": 2.0,
-            "shadow_sigma_db": 6.0,
-        },
-    ]
-
-
-class RSSIFeatureAggregationTests(unittest.TestCase):
-    def test_new_material_columns_are_aggregated(self) -> None:
-        rows = _base_rssi_rows()
-        rows[0].update(
-            {
-                "obstacle_attenuation_db": 42.0,
-                "wall_attenuation_db": 20.0,
-                "human_attenuation_db": 0.0,
-                "door_attenuation_db": 15.0,
-                "window_attenuation_db": 7.0,
-                "door_blocker_count": 1,
-                "window_blocker_count": 1,
-                "wall_loss_db": 20.0,
-                "human_loss_db": 31.7075,
-                "door_loss_db": 15.0,
-                "window_loss_db": 7.0,
-            }
-        )
-        rows[1].update(
-            {
-                "obstacle_attenuation_db": 0.0,
-                "wall_attenuation_db": 0.0,
-                "human_attenuation_db": 0.0,
-                "door_attenuation_db": 0.0,
-                "window_attenuation_db": 0.0,
-                "door_blocker_count": 0,
-                "window_blocker_count": 0,
-                "wall_loss_db": 20.0,
-                "human_loss_db": 31.7075,
-                "door_loss_db": 15.0,
-                "window_loss_db": 7.0,
-            }
+class LeakageSafeTelemetryFeatureTests(unittest.TestCase):
+    def test_rssi_features_include_per_antenna_observed_signal(self) -> None:
+        rssi_df = pd.DataFrame(
+            [
+                {
+                    "scenario_id": "s1",
+                    "target_id": 1,
+                    "antenna_id": 0,
+                    "signal_strength_dbm": -40.0,
+                    "path_loss_db_with_noise": 70.0,
+                },
+                {
+                    "scenario_id": "s1",
+                    "target_id": 1,
+                    "antenna_id": 1,
+                    "signal_strength_dbm": -50.0,
+                    "path_loss_db_with_noise": 80.0,
+                },
+            ]
         )
 
-        features_df = CREATE_ML_DATASET._rssi_features(pd.DataFrame(rows))
+        features_df = CREATE_ML_DATASET._rssi_features(rssi_df)
         row = features_df.iloc[0]
 
-        self.assertAlmostEqual(row["rssi_door_attenuation_mean_db"], 7.5)
-        self.assertAlmostEqual(row["rssi_window_attenuation_mean_db"], 3.5)
-        self.assertAlmostEqual(row["rssi_door_blocker_mean"], 0.5)
-        self.assertEqual(row["rssi_door_blocker_max"], 1)
-        self.assertAlmostEqual(row["rssi_window_blocker_mean"], 0.5)
-        self.assertEqual(row["rssi_window_blocker_max"], 1)
-        self.assertAlmostEqual(row["rssi_human_loss_mean_db"], 31.7075)
-        self.assertAlmostEqual(row["rssi_window_loss_mean_db"], 7.0)
+        self.assertAlmostEqual(row["rssi_signal_mean_dbm"], -45.0)
+        self.assertEqual(row["rssi_antenna_0_present"], 1)
+        self.assertEqual(row["rssi_antenna_1_present"], 1)
+        self.assertAlmostEqual(row["rssi_antenna_0_signal_dbm"], -40.0)
+        self.assertAlmostEqual(row["rssi_antenna_1_signal_dbm"], -50.0)
+        self.assertNotIn("rssi_path_loss_mean_db", features_df.columns)
 
-    def test_missing_material_columns_default_to_zero(self) -> None:
-        features_df = CREATE_ML_DATASET._rssi_features(pd.DataFrame(_base_rssi_rows()))
-        row = features_df.iloc[0]
+    def test_build_ml_dataset_keeps_wide_observed_telemetry_without_leakage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            self._write_smoke_tables(data_dir)
 
-        self.assertAlmostEqual(row["rssi_door_attenuation_mean_db"], 0.0)
-        self.assertAlmostEqual(row["rssi_window_attenuation_mean_db"], 0.0)
-        self.assertAlmostEqual(row["rssi_door_blocker_mean"], 0.0)
-        self.assertAlmostEqual(row["rssi_window_blocker_mean"], 0.0)
-        self.assertAlmostEqual(row["rssi_door_loss_mean_db"], 0.0)
-        self.assertAlmostEqual(row["rssi_window_loss_mean_db"], 0.0)
+            dataset_df = CREATE_ML_DATASET.build_ml_dataset(data_dir)
+
+        expected_columns = {
+            "antenna_0_present",
+            "antenna_0_x",
+            "antenna_0_y",
+            "antenna_0_coverage_radius_m",
+            "antenna_1_present",
+            "rssi_antenna_0_present",
+            "rssi_antenna_0_signal_dbm",
+            "doa_antenna_1_present",
+            "doa_antenna_1_bearing_sin",
+            "doa_antenna_1_bearing_cos",
+            "doa_antenna_1_doa_sin",
+            "doa_antenna_1_doa_cos",
+            "tdoa_ref_0_cmp_1_present",
+            "tdoa_ref_0_cmp_1_observed_ns",
+        }
+        self.assertTrue(expected_columns.issubset(dataset_df.columns))
+
+        forbidden_columns = [
+            column
+            for column in dataset_df.columns
+            if CREATE_ML_DATASET._is_forbidden_ml_feature(column)
+        ]
+        self.assertEqual(forbidden_columns, [])
+        self.assertEqual(len(dataset_df), 2)
+
+    def _write_smoke_tables(self, data_dir: Path) -> None:
+        scenario_id = "s1"
+        pd.DataFrame(
+            [
+                {
+                    "scenario_id": scenario_id,
+                    "target_count": 2,
+                    "antenna_count": 2,
+                    "area": 100.0,
+                    "env_type": "indoor",
+                    "width": 10.0,
+                    "height": 10.0,
+                    "x_domain_min": 0.0,
+                    "x_domain_max": 10.0,
+                    "y_range_min": 0.0,
+                    "y_range_max": 10.0,
+                    "human_count": 1,
+                    "floor_plan_room_count": 1,
+                    "floor_plan_patio_count": 0,
+                    "floor_plan_element_count": 3,
+                }
+            ]
+        ).to_parquet(data_dir / "env_summary.parquet", index=False)
+
+        pd.DataFrame(
+            [
+                {
+                    "scenario_id": scenario_id,
+                    "antenna_id": 0,
+                    "x": 0.0,
+                    "y": 0.0,
+                    "coverage_radius": 30.0,
+                },
+                {
+                    "scenario_id": scenario_id,
+                    "antenna_id": 1,
+                    "x": 10.0,
+                    "y": 0.0,
+                    "coverage_radius": 30.0,
+                },
+            ]
+        ).to_parquet(data_dir / "antennas.parquet", index=False)
+
+        pd.DataFrame(
+            [
+                {
+                    "scenario_id": scenario_id,
+                    "target_id": 0,
+                    "target_label": "target_00000",
+                    "position": [2.0, 3.0],
+                },
+                {
+                    "scenario_id": scenario_id,
+                    "target_id": 1,
+                    "target_label": "target_00001",
+                    "position": [8.0, 6.0],
+                },
+            ]
+        ).to_parquet(data_dir / "targets.parquet", index=False)
+
+        pd.DataFrame(
+            [
+                {
+                    "scenario_id": scenario_id,
+                    "target_id": target_id,
+                    "antenna_id": antenna_id,
+                    "signal_strength_dbm": -45.0 - target_id - antenna_id,
+                    "path_loss_db_with_noise": 70.0 + target_id + antenna_id,
+                    "obstacle_attenuation_db": 10.0,
+                }
+                for target_id in [0, 1]
+                for antenna_id in [0, 1]
+            ]
+        ).to_parquet(data_dir / "links_rssi.parquet", index=False)
+
+        pd.DataFrame(
+            [
+                {
+                    "scenario_id": scenario_id,
+                    "target_id": 0,
+                    "reference_antenna_id": 0,
+                    "comparison_antenna_id": 1,
+                    "observed_tdoa_ns": 1.2,
+                    "reference_distance_m": 3.6,
+                    "comparison_distance_m": 8.5,
+                    "tdoa_noise_sigma_ns": 0.2,
+                    "ideal_tdoa_ns": 1.0,
+                },
+                {
+                    "scenario_id": scenario_id,
+                    "target_id": 1,
+                    "reference_antenna_id": 0,
+                    "comparison_antenna_id": 1,
+                    "observed_tdoa_ns": -0.7,
+                    "reference_distance_m": 10.0,
+                    "comparison_distance_m": 6.3,
+                    "tdoa_noise_sigma_ns": 0.2,
+                    "ideal_tdoa_ns": -0.5,
+                },
+            ]
+        ).to_parquet(data_dir / "links_tdoa.parquet", index=False)
+
+        pd.DataFrame(
+            [
+                {
+                    "scenario_id": scenario_id,
+                    "target_id": target_id,
+                    "antenna_id": antenna_id,
+                    "observed_bearing_rad": 0.2 + target_id + antenna_id,
+                    "observed_doa_rad": 0.1 + target_id + antenna_id,
+                    "observed_bearing_deg": math.degrees(0.2 + target_id + antenna_id),
+                    "observed_doa_deg": math.degrees(0.1 + target_id + antenna_id),
+                    "true_bearing_rad": 0.0,
+                    "doa_noise_sigma_deg": 1.0,
+                    "is_doa_valid": True,
+                }
+                for target_id in [0, 1]
+                for antenna_id in [0, 1]
+            ]
+        ).to_parquet(data_dir / "links_doa.parquet", index=False)
 
 
 if __name__ == "__main__":
