@@ -1,0 +1,1 @@
+NOTE: At this stage for RSSI calculations and link telemetry attenuation values where mistakingle set to 0.
