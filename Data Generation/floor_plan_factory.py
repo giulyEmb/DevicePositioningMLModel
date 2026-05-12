@@ -103,7 +103,7 @@ from environment_factory import Environment
 
 EPSILON = 1e-6
 METERS_PER_INCH = 0.0254
-DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "floor_planning" / "generated"
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "1_floor_planning" / "generated"
 
 
 @dataclass(frozen=True)
