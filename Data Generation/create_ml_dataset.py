@@ -279,22 +279,7 @@ def _doa_features(doa_df: pd.DataFrame) -> pd.DataFrame:
         doa_observed_doa_sin_mean=("doa_observed_doa_sin", "mean"),
         doa_observed_doa_cos_mean=("doa_observed_doa_cos", "mean"),
     ).reset_index()
-    return summary_df.merge(
-        _wide_single_antenna_measurements(
-            prepared_df,
-            value_columns={
-                "doa_observed_bearing_sin": "bearing_sin",
-                "doa_observed_bearing_cos": "bearing_cos",
-                "doa_observed_doa_sin": "doa_sin",
-                "doa_observed_doa_cos": "doa_cos",
-            },
-            output_prefix="doa",
-            table_name="links_doa.parquet",
-        ),
-        on=KEY_COLUMNS,
-        how="left",
-        validate="one_to_one",
-    )
+    return summary_df
 
 
 def _is_forbidden_ml_feature(column: str) -> bool:
