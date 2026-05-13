@@ -81,6 +81,44 @@ class LeakageSafeTelemetryFeatureTests(unittest.TestCase):
         ]
         self.assertEqual(forbidden_columns, [])
         self.assertEqual(len(dataset_df), 2)
+        self.assertEqual(
+            dataset_df.sort_values("target_id")[["target_x", "target_y"]].to_dict("records"),
+            [
+                {"target_x": 2.0, "target_y": 3.0},
+                {"target_x": 8.0, "target_y": 6.0},
+            ],
+        )
+        for estimate_column in [
+            "rssi_est_x",
+            "rssi_est_y",
+            "tdoa_est_x",
+            "tdoa_est_y",
+            "doa_est_x",
+            "doa_est_y",
+        ]:
+            self.assertNotIn(estimate_column, dataset_df.columns)
+
+    def test_forbidden_ml_feature_detection_catches_leakage_columns(self) -> None:
+        forbidden_columns = [
+            "rssi_est_x",
+            "tdoa_est_y",
+            "doa_error_m",
+            "rssi_residual_rmse_m",
+            "tdoa_anchor_count",
+            "reference_distance_m",
+            "path_loss_db_with_noise",
+            "wall_attenuation_db",
+            "tdoa_noise_sigma_ns",
+            "ideal_tdoa_ns",
+            "true_bearing_rad",
+        ]
+        for column in forbidden_columns:
+            with self.subTest(column=column):
+                self.assertTrue(CREATE_ML_DATASET._is_forbidden_ml_feature(column))
+
+        for column in ["target_x", "target_y", "rssi_signal_mean_dbm"]:
+            with self.subTest(column=column):
+                self.assertFalse(CREATE_ML_DATASET._is_forbidden_ml_feature(column))
 
     def _write_smoke_tables(self, data_dir: Path) -> None:
         scenario_id = "s1"
@@ -141,6 +179,26 @@ class LeakageSafeTelemetryFeatureTests(unittest.TestCase):
                 },
             ]
         ).to_parquet(data_dir / "targets.parquet", index=False)
+
+        pd.DataFrame(
+            [
+                {
+                    "scenario_id": scenario_id,
+                    "target_id": target_id,
+                    "target_x": 999.0,
+                    "target_y": 999.0,
+                    "rssi_est_x": 1.0,
+                    "rssi_est_y": 1.0,
+                    "tdoa_est_x": 2.0,
+                    "tdoa_est_y": 2.0,
+                    "doa_est_x": 3.0,
+                    "doa_est_y": 3.0,
+                    "rssi_error_m": 4.0,
+                    "tdoa_anchor_count": 2,
+                }
+                for target_id in [0, 1]
+            ]
+        ).to_parquet(data_dir / "position_estimates.parquet", index=False)
 
         pd.DataFrame(
             [
