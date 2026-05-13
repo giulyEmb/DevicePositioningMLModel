@@ -4,9 +4,12 @@ LABELLED ML DATASET BUILDER
 
 Construct one supervised-learning row per scenario-target pair by merging:
 - scenario/environment features
-- antenna-layout summaries
-- per-antenna and per-pair observed telemetry
-- RSSI, TDOA, and DOA/AOA measurement summaries
+- antenna-layout aggregate statistics (mean, min, max, std)
+- aggregate observed telemetry summaries for RSSI, TDOA, and DOA/AOA
+
+NOTE: This dataset uses aggregated features only, not per-antenna wide features.
+This keeps the dataset memory-efficient and focuses on environmental constraints
+and measurement statistics rather than individual antenna configurations.
 
 Input tables:
 - env_summary.parquet
@@ -173,160 +176,16 @@ def _antenna_features(antennas_df: pd.DataFrame) -> pd.DataFrame:
         how="left",
         validate="one_to_one",
     )
-    return summary_df.merge(
-        _wide_antenna_features(antennas_df),
-        on="scenario_id",
-        how="left",
-        validate="one_to_one",
-    )
+    return summary_df
 
 
-def _wide_antenna_features(antennas_df: pd.DataFrame) -> pd.DataFrame:
-    _require_columns(
-        antennas_df,
-        ["scenario_id", "antenna_id", "x", "y", "coverage_radius"],
-        "antennas.parquet",
-    )
-    duplicate_rows = antennas_df.duplicated(["scenario_id", "antenna_id"], keep=False)
-    if duplicate_rows.any():
-        duplicate_count = int(duplicate_rows.sum())
-        raise ValueError(f"antennas.parquet has {duplicate_count} duplicate scenario-antenna rows.")
-
-    rows = []
-    for scenario_id, group in antennas_df.groupby("scenario_id", sort=True):
-        row: dict[str, object] = {"scenario_id": scenario_id}
-        for _, antenna in group.sort_values("antenna_id").iterrows():
-            antenna_id = _feature_id(antenna["antenna_id"])
-            prefix = f"antenna_{antenna_id}"
-            row[f"{prefix}_present"] = 1
-            row[f"{prefix}_x"] = float(antenna["x"])
-            row[f"{prefix}_y"] = float(antenna["y"])
-            row[f"{prefix}_coverage_radius_m"] = float(antenna["coverage_radius"])
-        rows.append(row)
-
-    wide_df = pd.DataFrame(rows)
-    present_cols = [column for column in wide_df.columns if column.endswith("_present")]
-    if present_cols:
-        wide_df[present_cols] = wide_df[present_cols].fillna(0).astype(int)
-    return wide_df
 
 
-def _wide_single_antenna_measurements(
-    measurement_df: pd.DataFrame,
-    *,
-    value_columns: dict[str, str],
-    output_prefix: str,
-    table_name: str,
-) -> pd.DataFrame:
-    _require_columns(
-        measurement_df,
-        [*KEY_COLUMNS, "antenna_id", *value_columns.keys()],
-        table_name,
-    )
-    prepared_df = measurement_df[[*KEY_COLUMNS, "antenna_id", *value_columns.keys()]].copy()
-    prepared_df["_antenna_feature_id"] = prepared_df["antenna_id"].map(_feature_id)
-    index_cols = [*KEY_COLUMNS, "_antenna_feature_id"]
-    grouped = prepared_df.groupby(index_cols, sort=True)
-
-    wide_parts = []
-    present_df = (
-        grouped[list(value_columns.keys())]
-        .count()
-        .max(axis=1)
-        .gt(0)
-        .astype(int)
-        .rename("present")
-        .reset_index()
-    )
-    wide_parts.append(
-        present_df.pivot(
-            index=KEY_COLUMNS,
-            columns="_antenna_feature_id",
-            values="present",
-        ).rename(columns=lambda antenna_id: f"{output_prefix}_antenna_{antenna_id}_present")
-    )
-
-    for source_column, output_suffix in value_columns.items():
-        value_df = (
-            grouped[source_column]
-            .mean()
-            .reset_index()
-            .pivot(
-                index=KEY_COLUMNS,
-                columns="_antenna_feature_id",
-                values=source_column,
-            )
-            .rename(columns=lambda antenna_id: f"{output_prefix}_antenna_{antenna_id}_{output_suffix}")
-        )
-        wide_parts.append(value_df)
-
-    wide_df = pd.concat(wide_parts, axis=1).reset_index()
-    present_cols = [column for column in wide_df.columns if column.endswith("_present")]
-    if present_cols:
-        wide_df[present_cols] = wide_df[present_cols].fillna(0).astype(int)
-    return wide_df
 
 
-def _wide_tdoa_features(tdoa_df: pd.DataFrame) -> pd.DataFrame:
-    _require_columns(
-        tdoa_df,
-        [
-            "scenario_id",
-            "target_id",
-            "reference_antenna_id",
-            "comparison_antenna_id",
-            "observed_tdoa_ns",
-        ],
-        "links_tdoa.parquet",
-    )
-    prepared_df = tdoa_df[
-        [
-            "scenario_id",
-            "target_id",
-            "reference_antenna_id",
-            "comparison_antenna_id",
-            "observed_tdoa_ns",
-        ]
-    ].copy()
-    prepared_df["_tdoa_pair_id"] = [
-        f"ref_{_feature_id(ref_id)}_cmp_{_feature_id(cmp_id)}"
-        for ref_id, cmp_id in zip(
-            prepared_df["reference_antenna_id"],
-            prepared_df["comparison_antenna_id"],
-        )
-    ]
-    index_cols = [*KEY_COLUMNS, "_tdoa_pair_id"]
-    grouped = prepared_df.groupby(index_cols, sort=True)
 
-    present_df = (
-        grouped["observed_tdoa_ns"]
-        .count()
-        .gt(0)
-        .astype(int)
-        .rename("present")
-        .reset_index()
-    )
-    present_wide_df = present_df.pivot(
-        index=KEY_COLUMNS,
-        columns="_tdoa_pair_id",
-        values="present",
-    ).rename(columns=lambda pair_id: f"tdoa_{pair_id}_present")
-    observed_wide_df = (
-        grouped["observed_tdoa_ns"]
-        .mean()
-        .reset_index()
-        .pivot(
-            index=KEY_COLUMNS,
-            columns="_tdoa_pair_id",
-            values="observed_tdoa_ns",
-        )
-        .rename(columns=lambda pair_id: f"tdoa_{pair_id}_observed_ns")
-    )
-    wide_df = pd.concat([present_wide_df, observed_wide_df], axis=1).reset_index()
-    present_cols = [column for column in wide_df.columns if column.endswith("_present")]
-    if present_cols:
-        wide_df[present_cols] = wide_df[present_cols].fillna(0).astype(int)
-    return wide_df
+
+
 
 
 def _rssi_features(rssi_df: pd.DataFrame) -> pd.DataFrame:
@@ -355,17 +214,7 @@ def _rssi_features(rssi_df: pd.DataFrame) -> pd.DataFrame:
         how="left",
         validate="one_to_one",
     )
-    return summary_df.merge(
-        _wide_single_antenna_measurements(
-            rssi_df,
-            value_columns={"signal_strength_dbm": "signal_dbm"},
-            output_prefix="rssi",
-            table_name="links_rssi.parquet",
-        ),
-        on=KEY_COLUMNS,
-        how="left",
-        validate="one_to_one",
-    )
+    return summary_df
 
 
 def _tdoa_features(tdoa_df: pd.DataFrame) -> pd.DataFrame:
@@ -394,12 +243,7 @@ def _tdoa_features(tdoa_df: pd.DataFrame) -> pd.DataFrame:
         how="left",
         validate="one_to_one",
     )
-    return summary_df.merge(
-        _wide_tdoa_features(tdoa_df),
-        on=KEY_COLUMNS,
-        how="left",
-        validate="one_to_one",
-    )
+    return summary_df
 
 
 def _doa_features(doa_df: pd.DataFrame) -> pd.DataFrame:
